@@ -187,7 +187,6 @@ void* https_server(void* args) {
 
 int main() {
   pthread_t tids[2];
-  https_server(NULL);
   pthread_create(&tids[0], NULL, http_server, NULL);
   pthread_create(&tids[1], NULL, https_server, NULL);
   while(1);
