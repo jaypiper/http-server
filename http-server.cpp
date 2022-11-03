@@ -115,11 +115,18 @@ void requestHttps(SSL* ssl) {
   assert((pos_end = buf_str.find("\r", pos_start)) != string::npos);
   string host = buf_str.substr(pos_start, pos_end-pos_start);
   if(method == "GET") {
-    HttpMsg msg = {.status = 200, .status_msg = "OK"};
     ifstream t(("dir/" + filename).c_str());
-    stringstream buffer;
-    buffer << t.rdbuf();
-    msg.body = buffer.str();
+    HttpMsg msg;
+    if(t.good()) {
+      msg.status = 200;
+      msg.status_msg = "OK";
+      stringstream buffer;
+      buffer << t.rdbuf();
+      msg.body = buffer.str();
+    } else {
+      msg.status = 404;
+      msg.status_msg = "Not Found";
+    }
     string http_resp = makeHttpResponse(&msg);
     std::cout <<"(" << http_resp.substr(0, http_resp.length() - msg.body.length()) << ")\n";
     SSL_write(ssl, http_resp.c_str(), http_resp.length());
