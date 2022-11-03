@@ -12,6 +12,7 @@
 #include <vector>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <sstream>
 
 using namespace std;
 
@@ -115,11 +116,12 @@ void requestHttps(SSL* ssl) {
   string host = buf_str.substr(pos_start, pos_end-pos_start);
   if(method == "GET") {
     HttpMsg msg = {.status = 200, .status_msg = "OK"};
-    FILE* file = fopen(("dir/" + filename).c_str(), "r");
-    int readcount = fread(body_buf, 1, FILESZ, file);
-    msg.body += body_buf;
+    ifstream t(("dir/" + filename).c_str());
+    stringstream buffer;
+    buffer << t.rdbuf();
+    msg.body = buffer.str();
     string http_resp = makeHttpResponse(&msg);
-    std::cout <<"(" << http_resp << ")\n";
+    std::cout <<"(" << http_resp.substr(0, http_resp.length() - msg.body.length()) << ")\n";
     SSL_write(ssl, http_resp.c_str(), http_resp.length());
   }
 }
