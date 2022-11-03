@@ -94,9 +94,18 @@ void* http_server(void* args) {
   return 0;
 }
 
+void parseRange(string msg, int* start, int* end) {
+  int pos_start = msg.find("Range:");
+  if(pos_start == string::npos) return;
+  pos_start += 13;   // Range: bytes=
+  int pos_end = msg.find("\r", pos_start);
+  int pos_mid = msg.find("-", pos_start);
+  *start = pos_start == pos_mid ? 0 : stoi(msg.substr(pos_start, pos_mid - pos_start));
+  *end = pos_mid == (pos_end - 1) ? INT32_MAX : stoi(msg.substr(pos_mid + 1, pos_end - pos_mid - 1));
+}
+
 void requestHttps(SSL* ssl) {
   char buf[BUFSZ];
-  char body_buf[BUFSZ];
   memset(buf, 0, sizeof(buf));
   int read_count = SSL_read(ssl, buf, BUFSZ);
   
@@ -114,16 +123,26 @@ void requestHttps(SSL* ssl) {
   pos_start += 6;
   assert((pos_end = buf_str.find("\r", pos_start)) != string::npos);
   string host = buf_str.substr(pos_start, pos_end-pos_start);
+
+  int range_start = -1, range_end = -1;
+  parseRange(buf_str, &range_start, &range_end);
+
   if(method == "GET") {
     ifstream t(("dir/" + filename).c_str());
     if(!t.good()) t.open(filename);
     HttpMsg msg;
     if(t.good()) {
-      msg.status = 200;
-      msg.status_msg = "OK";
       stringstream buffer;
       buffer << t.rdbuf();
-      msg.body = buffer.str();
+      if(range_start == -1) {
+        msg.status = 200;
+        msg.status_msg = "OK";
+        msg.body = buffer.str();
+      } else {
+        msg.status = 206;
+        msg.status_msg = "Partial Content";
+        msg.body = buffer.str().substr(range_start, min(buffer.str().length(), (size_t)range_end - range_start + 1));
+      }
     } else {
       msg.status = 404;
       msg.status_msg = "Not Found";
