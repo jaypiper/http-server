@@ -116,6 +116,7 @@ void requestHttps(SSL* ssl) {
   string host = buf_str.substr(pos_start, pos_end-pos_start);
   if(method == "GET") {
     ifstream t(("dir/" + filename).c_str());
+    if(!t.good()) t.open(filename);
     HttpMsg msg;
     if(t.good()) {
       msg.status = 200;
