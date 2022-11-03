@@ -94,7 +94,7 @@ void* http_server(void* args) {
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     int clientfd = accept(httpfd, (struct sockaddr*) &client_addr, &client_len);
-    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=", to_string(clientfd) + "\n");
+    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
     assert(clientfd != -1);
     requestHttp(clientfd);
   }
@@ -207,7 +207,7 @@ void* https_server(void* args) {
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     int clientfd = accept(httpsfd, (struct sockaddr*)&client_addr, &client_len);
-    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=", to_string(clientfd) + "\n");
+    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
     assert(clientfd != -1);
     SSL* ssl = SSL_new(ctx);
 
