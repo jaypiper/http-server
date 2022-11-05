@@ -13,6 +13,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <sstream>
+#include <sys/epoll.h>
 
 using namespace std;
 
@@ -25,12 +26,30 @@ using namespace std;
 #define LINELEN 1024
 #define SHORTSZ 128
 #define FILESZ (1 << 14)
+#define MAX_HTTP_EVENT 20
+
 
 #ifdef DEBUG
   #define LOG(...) std::cout << __VA_ARGS__
 #else
   #define LOG(...)
 #endif
+
+void epoll_add(int epfd, int fd) {
+  epoll_event event;
+  event.data.fd = fd;
+  event.events = EPOLLIN | EPOLLONESHOT;
+  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
+}
+
+void epoll_mod(int epfd, int fd) {
+  epoll_event event;
+  event.data.fd = fd;
+  event.events = EPOLLIN | EPOLLONESHOT;
+  epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
+}
+
+void parseRange(string msg, int* start, int* end) ;
 
 typedef struct HTTPMsg{
   int status;
@@ -54,8 +73,9 @@ string makeHttpResponse(HttpMsg* msg) {
 void requestHttp(int sockfd) {
   char buf[BUFSZ];
   memset(buf, 0, sizeof(buf));
-  read(sockfd, buf, BUFSZ);
-  LOG( "[\n" + string(buf)  + "]\n" );
+  int n = read(sockfd, buf, BUFSZ);
+  if(n == 0) return;
+  LOG( "[" + to_string(n) + "\n" + string(buf)  + "]\n" );
 
   string buf_str = buf;
   assert(buf_str.find("HTTP/") != string::npos);
@@ -72,14 +92,49 @@ void requestHttp(int sockfd) {
   assert((pos_end = buf_str.find("\r", pos_start)) != string::npos);
   string host = buf_str.substr(pos_start, pos_end-pos_start);
 
-  if(method == "GET") {
-    HttpMsg msg = {.status = 301, .status_msg = "Moved Permanently"};
-    msg.header.push_back("Location: https://" + host + "/" + filename);
-    string http_resp = makeHttpResponse(&msg);
-    LOG("(" + http_resp + ")\n");
-    send(sockfd, http_resp.c_str(), http_resp.length(), 0);
+  // if(method == "GET") {
+  //   HttpMsg msg = {.status = 301, .status_msg = "Moved Permanently"};
+  //   msg.header.push_back("Location: https://" + host + "/" + filename);
+  //   string http_resp = makeHttpResponse(&msg);
+  //   LOG("(" + http_resp + ")\n");
+  //   send(sockfd, http_resp.c_str(), http_resp.length(), 0);
 
+  // }
+  int range_start = -1, range_end = -1;
+  parseRange(buf_str, &range_start, &range_end);
+  LOG("start = " + to_string(range_start) + " end = " + to_string(range_end) +"\n");
+  if(method == "GET") {
+    ifstream t(("dir/" + filename).c_str());
+    if(!t.good()) t.open(filename);
+    HttpMsg msg;
+    if(t.good()) {
+      stringstream buffer;
+      buffer << t.rdbuf();
+      if(range_start == -1) {
+        msg.status = 200;
+        msg.status_msg = "OK";
+        msg.body = buffer.str();
+      } else {
+        msg.status = 206;
+        msg.status_msg = "Partial Content";
+        range_end = min(buffer.str().length()-1, (size_t)range_end);
+        msg.body = buffer.str().substr(range_start, range_end - range_start + 1);
+        msg.header.push_back("Content-Range: bytes " + to_string(range_start) + "-" + to_string(range_end) + "/" + to_string(range_end - range_start + 1));
+      }
+    } else {
+      msg.status = 404;
+      msg.status_msg = "Not Found";
+    }
+    string http_resp = makeHttpResponse(&msg);
+    LOG( "(" + http_resp.substr(0, http_resp.length() - msg.body.length()) + ")\n");
+    send(sockfd, http_resp.c_str(), http_resp.length(), 0);
   }
+}
+
+void* http_handler(void* args) {
+  int clientfd = *(int*)args;
+  requestHttp(clientfd);
+  return 0;
 }
 
 void* http_server(void* args) {
@@ -90,13 +145,32 @@ void* http_server(void* args) {
   assert(bind(httpfd, (struct sockaddr*)&http_addr, sizeof(http_addr)) != -1);
   assert(listen(httpfd, 10) != -1);
 
+  int http_ep = epoll_create(4);
+  epoll_add(http_ep, httpfd);
+  epoll_event events[MAX_HTTP_EVENT];
+
   while(1) {
-    sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    int clientfd = accept(httpfd, (struct sockaddr*) &client_addr, &client_len);
-    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
-    assert(clientfd != -1);
-    requestHttp(clientfd);
+    int num = epoll_wait(http_ep, events, MAX_HTTP_EVENT, -1);
+    pthread_t tids[num];
+    for(int i = 0; i < num; i++) {
+      if(events[i].events & EPOLLIN) {
+        if(events[i].data.fd == httpfd) {
+          sockaddr_in client_addr;
+          socklen_t client_len = sizeof(client_addr);
+          int clientfd = accept(httpfd, (struct sockaddr*) &client_addr, &client_len);
+          epoll_add(http_ep, clientfd);
+          LOG( "Hello create " + to_string(clientfd) + "\n");
+          LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
+        } else {
+          LOG( "Hello client " + to_string(events[i].data.fd) + "\n");
+          int* fd_ptr = (int*)malloc(4);
+          *fd_ptr = events[i].data.fd;
+          pthread_create(&tids[i], NULL, http_handler, fd_ptr);
+        }
+        // it works! But need to be executed after read from fd
+        epoll_mod(http_ep, events[i].data.fd);
+      }
+    }
   }
   return 0;
 }
@@ -221,6 +295,7 @@ void* https_server(void* args) {
 }
 
 
+#define ThreadNum 4
 int main() {
   pthread_t tids[2];
   pthread_create(&tids[0], NULL, http_server, NULL);
