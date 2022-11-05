@@ -49,6 +49,8 @@ typedef struct EpollData{
   int fd;
 }epollData;
 
+int http_ep;
+int https_ep;
 
 void epoll_add(int epfd, int fd, SSL* ssl) {
   epoll_event event;
@@ -145,6 +147,7 @@ void requestHttp(int sockfd) {
     send(sockfd, http_resp.c_str(), http_resp.length(), 0);
   }
 #endif
+  epoll_ctl(http_ep, EPOLL_CTL_DEL, sockfd, NULL);
 }
 
 void* http_handler(void* args) {
@@ -161,7 +164,7 @@ void* http_server(void* args) {
   assert(bind(httpfd, (struct sockaddr*)&http_addr, sizeof(http_addr)) != -1);
   assert(listen(httpfd, 10) != -1);
 
-  int http_ep = epoll_create(4);
+  http_ep = epoll_create(20);
   epoll_add(http_ep, httpfd, NULL);
   epoll_event events[MAX_HTTP_EVENT];
 
@@ -179,6 +182,7 @@ void* http_server(void* args) {
           LOG( "Hello http create " + to_string(clientfd) + "\n");
           LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
         } else {
+          // LOG( "Hello http client " + to_string(edata->fd) + "\n");
           pthread_create(&tids[i], NULL, http_handler, &edata->fd);
         }
         // it works! But need to be executed after read from fd
@@ -199,7 +203,7 @@ void parseRange(string msg, int* start, int* end) {
   *end = pos_mid == (pos_end - 1) ? INT32_MAX : stoi(msg.substr(pos_mid + 1, pos_end - pos_mid - 1));
 }
 
-void requestHttps(SSL* ssl) {
+void requestHttps(int fd, SSL* ssl) {
   char buf[BUFSZ];
   memset(buf, 0, sizeof(buf));
   int read_count = SSL_read(ssl, buf, BUFSZ);
@@ -248,6 +252,8 @@ void requestHttps(SSL* ssl) {
     LOG( "(" + http_resp.substr(0, http_resp.length() - msg.body.length()) + ")\n");
     SSL_write(ssl, http_resp.c_str(), http_resp.length());
   }
+
+  epoll_ctl(https_ep, EPOLL_CTL_DEL, fd, NULL);
 }
 
 SSL_CTX *create_context()
@@ -282,8 +288,10 @@ void configure_context(SSL_CTX *ctx)
 }
 
 void* https_handler(void* args) {
-  SSL* ssl = (SSL*)args;
-  requestHttps(ssl);
+  epollData* edata = (epollData*)args;
+
+  SSL* ssl = edata->ssl;
+  requestHttps(edata->fd, ssl);
   return 0;
 }
 
@@ -298,7 +306,7 @@ void* https_server(void* args) {
   ctx = create_context();
   configure_context(ctx);
 
-  int https_ep = epoll_create(8);
+  https_ep = epoll_create(20);
   epoll_add(https_ep, httpsfd, NULL);
   epoll_event events[MAX_HTTP_EVENT];
 
@@ -320,7 +328,7 @@ void* https_server(void* args) {
           LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
         } else {
           // LOG( "Hello https client " + to_string(edata->fd) + "\n");
-          pthread_create(&tids[i], NULL, https_handler, edata->ssl);
+          pthread_create(&tids[i], NULL, https_handler, edata);
         }
         // it works! But need to be executed after read from fd
         epoll_mod(https_ep, edata->fd, edata->ssl);
