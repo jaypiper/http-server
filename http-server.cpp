@@ -149,7 +149,9 @@ void requestHttps(SSL* ssl) {
       } else {
         msg.status = 206;
         msg.status_msg = "Partial Content";
-        msg.body = buffer.str().substr(range_start, min(buffer.str().length(), (size_t)range_end - range_start + 1));
+        range_end = min(buffer.str().length()-1, (size_t)range_end);
+        msg.body = buffer.str().substr(range_start, range_end - range_start + 1);
+        msg.header.push_back("Content-Range: bytes " + to_string(range_start) + "-" + to_string(range_end) + "/" + to_string(range_end - range_start + 1));
       }
     } else {
       msg.status = 404;
