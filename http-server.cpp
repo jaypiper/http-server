@@ -224,8 +224,7 @@ void requestHttps(SSL* ssl) {
   LOG("start = " + to_string(range_start) + " end = " + to_string(range_end) +"\n");
 
   if(method == "GET") {
-    ifstream t(("dir/" + filename).c_str());
-    if(!t.good()) t.open(filename);
+    ifstream t( filename.c_str());
     HttpMsg msg;
     if(t.good()) {
       stringstream buffer;
