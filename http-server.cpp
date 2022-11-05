@@ -14,6 +14,7 @@
 #include <openssl/err.h>
 #include <sstream>
 #include <sys/epoll.h>
+#include <signal.h>
 
 using namespace std;
 
@@ -35,22 +36,6 @@ using namespace std;
   #define LOG(...)
 #endif
 
-void epoll_add(int epfd, int fd) {
-  epoll_event event;
-  event.data.fd = fd;
-  event.events = EPOLLIN | EPOLLONESHOT;
-  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
-}
-
-void epoll_mod(int epfd, int fd) {
-  epoll_event event;
-  event.data.fd = fd;
-  event.events = EPOLLIN | EPOLLONESHOT;
-  epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
-}
-
-void parseRange(string msg, int* start, int* end) ;
-
 typedef struct HTTPMsg{
   int status;
   string status_msg;
@@ -58,6 +43,34 @@ typedef struct HTTPMsg{
   vector<string> header;
   string body;
 }HttpMsg;
+
+typedef struct EpollData{
+  SSL* ssl;
+  int fd;
+}epollData;
+
+
+void epoll_add(int epfd, int fd, SSL* ssl) {
+  epoll_event event;
+  epollData* edata = (epollData*)malloc(sizeof(epollData));
+  event.data.ptr = (void*)edata;
+  edata->fd = fd;
+  edata->ssl = ssl;
+  event.events = EPOLLIN | EPOLLONESHOT;
+  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
+}
+
+void epoll_mod(int epfd, int fd, SSL* ssl) {
+  epoll_event event;
+  epollData* edata = (epollData*)malloc(sizeof(epollData));
+  event.data.ptr = (void*)edata;
+  edata->fd = fd;
+  edata->ssl = ssl;
+  event.events = EPOLLIN | EPOLLONESHOT;
+  epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
+}
+
+void parseRange(string msg, int* start, int* end) ;
 
 string makeHttpResponse(HttpMsg* msg) {
   string response = "HTTP/1.1";
@@ -74,7 +87,7 @@ void requestHttp(int sockfd) {
   char buf[BUFSZ];
   memset(buf, 0, sizeof(buf));
   int n = read(sockfd, buf, BUFSZ);
-  if(n == 0) return;
+  if(n <= 0) return;
   LOG( "[" + to_string(n) + "\n" + string(buf)  + "]\n" );
 
   string buf_str = buf;
@@ -92,14 +105,16 @@ void requestHttp(int sockfd) {
   assert((pos_end = buf_str.find("\r", pos_start)) != string::npos);
   string host = buf_str.substr(pos_start, pos_end-pos_start);
 
-  // if(method == "GET") {
-  //   HttpMsg msg = {.status = 301, .status_msg = "Moved Permanently"};
-  //   msg.header.push_back("Location: https://" + host + "/" + filename);
-  //   string http_resp = makeHttpResponse(&msg);
-  //   LOG("(" + http_resp + ")\n");
-  //   send(sockfd, http_resp.c_str(), http_resp.length(), 0);
+#if 1
+  if(method == "GET") {
+    HttpMsg msg = {.status = 301, .status_msg = "Moved Permanently"};
+    msg.header.push_back("Location: https://" + host + "/" + filename);
+    string http_resp = makeHttpResponse(&msg);
+    LOG("(" + http_resp + ")\n");
+    send(sockfd, http_resp.c_str(), http_resp.length(), 0);
 
-  // }
+  }
+#else
   int range_start = -1, range_end = -1;
   parseRange(buf_str, &range_start, &range_end);
   LOG("start = " + to_string(range_start) + " end = " + to_string(range_end) +"\n");
@@ -129,6 +144,7 @@ void requestHttp(int sockfd) {
     LOG( "(" + http_resp.substr(0, http_resp.length() - msg.body.length()) + ")\n");
     send(sockfd, http_resp.c_str(), http_resp.length(), 0);
   }
+#endif
 }
 
 void* http_handler(void* args) {
@@ -146,7 +162,7 @@ void* http_server(void* args) {
   assert(listen(httpfd, 10) != -1);
 
   int http_ep = epoll_create(4);
-  epoll_add(http_ep, httpfd);
+  epoll_add(http_ep, httpfd, NULL);
   epoll_event events[MAX_HTTP_EVENT];
 
   while(1) {
@@ -154,21 +170,19 @@ void* http_server(void* args) {
     pthread_t tids[num];
     for(int i = 0; i < num; i++) {
       if(events[i].events & EPOLLIN) {
-        if(events[i].data.fd == httpfd) {
+        epollData* edata = (epollData*)events[i].data.ptr;
+        if(edata->fd == httpfd) {
           sockaddr_in client_addr;
           socklen_t client_len = sizeof(client_addr);
           int clientfd = accept(httpfd, (struct sockaddr*) &client_addr, &client_len);
-          epoll_add(http_ep, clientfd);
-          LOG( "Hello create " + to_string(clientfd) + "\n");
+          epoll_add(http_ep, clientfd, NULL);
+          LOG( "Hello http create " + to_string(clientfd) + "\n");
           LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
         } else {
-          LOG( "Hello client " + to_string(events[i].data.fd) + "\n");
-          int* fd_ptr = (int*)malloc(4);
-          *fd_ptr = events[i].data.fd;
-          pthread_create(&tids[i], NULL, http_handler, fd_ptr);
+          pthread_create(&tids[i], NULL, http_handler, &edata->fd);
         }
         // it works! But need to be executed after read from fd
-        epoll_mod(http_ep, events[i].data.fd);
+        epoll_mod(http_ep, edata->fd, NULL);
       }
     }
   }
@@ -189,7 +203,7 @@ void requestHttps(SSL* ssl) {
   char buf[BUFSZ];
   memset(buf, 0, sizeof(buf));
   int read_count = SSL_read(ssl, buf, BUFSZ);
-  
+  if(read_count <= 0) return;
   LOG( "[\n" + string(buf) + "]\n");
   string buf_str = buf;
   assert(buf_str.find("HTTP/") != string::npos);
@@ -268,6 +282,12 @@ void configure_context(SSL_CTX *ctx)
     }
 }
 
+void* https_handler(void* args) {
+  SSL* ssl = (SSL*)args;
+  requestHttps(ssl);
+  return 0;
+}
+
 void* https_server(void* args) {
   int httpsfd = socket(PF_INET, SOCK_STREAM, 0);
   assert(httpsfd != -1);
@@ -279,24 +299,43 @@ void* https_server(void* args) {
   ctx = create_context();
   configure_context(ctx);
 
-  while(1) {
-    sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    int clientfd = accept(httpsfd, (struct sockaddr*)&client_addr, &client_len);
-    LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
-    assert(clientfd != -1);
-    SSL* ssl = SSL_new(ctx);
+  int https_ep = epoll_create(8);
+  epoll_add(https_ep, httpsfd, NULL);
+  epoll_event events[MAX_HTTP_EVENT];
 
-    SSL_set_fd(ssl, clientfd);
-    SSL_accept(ssl);
-    requestHttps(ssl);
+  while(1) {
+    int num = epoll_wait(https_ep, events, MAX_HTTP_EVENT, -1);
+    pthread_t tids[num];
+    for(int i = 0; i < num; i++) {
+      if(events[i].events & EPOLLIN) {
+        epollData* edata = (epollData*)events[i].data.ptr;
+        if(edata->fd == httpsfd) {
+          sockaddr_in client_addr;
+          socklen_t client_len = sizeof(client_addr);
+          int clientfd = accept(httpsfd, (struct sockaddr*) &client_addr, &client_len);
+          SSL* ssl = SSL_new(ctx);
+          SSL_set_fd(ssl, clientfd);
+          SSL_accept(ssl);
+          epoll_add(https_ep, clientfd, ssl);
+          LOG( "Hello https create " + to_string(clientfd) + "\n");
+          LOG("port=" + to_string(client_addr.sin_port) + " addr=" + to_string(client_addr.sin_addr.s_addr) + " fd=" + to_string(clientfd) + "\n");
+        } else {
+          // LOG( "Hello https client " + to_string(edata->fd) + "\n");
+          pthread_create(&tids[i], NULL, https_handler, edata->ssl);
+        }
+        // it works! But need to be executed after read from fd
+        epoll_mod(https_ep, edata->fd, edata->ssl);
+      }
+    }
   }
+
   return 0;
 }
 
 
 #define ThreadNum 4
 int main() {
+  signal(SIGPIPE, SIG_IGN);
   pthread_t tids[2];
   pthread_create(&tids[0], NULL, http_server, NULL);
   pthread_create(&tids[1], NULL, https_server, NULL);
